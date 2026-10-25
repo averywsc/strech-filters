@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reality Bender</title>
+<style>
+  :root {
+    --bg: #060605;
+    --fg: #e7e4dc;
+    --accent: #8fd0ff;
+    --line: rgba(143,208,255,0.3);
+    --bar-bg: rgba(6,6,5,0.88);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: var(--bg); overflow: hidden;
+    font-family: "Comic Sans MS", "Comic Neue", cursive, sans-serif;
+    color: var(--fg);
+  }
+  #outputCanvas {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    display: block; background: #000;
+  }
+  video { display: none; }
+
+  #topBar {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    z-index: 20; max-width: 96vw;
+  }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  @keyframes wobble { 0%,100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+  @keyframes pop { 0% { transform: scale(0.5) rotate(-8deg); opacity: 0; } 100% { transform: scale(1) rotate(0deg); opacity: 1; } }
+  .btn {
+    background: #ff5fa2; border: 4px solid #000; color: #000;
+    padding: 18px 30px; font-size: 18px; font-weight: 700;
+    cursor: pointer; white-space: nowrap; border-radius: 999px;
+    font-family: inherit; box-shadow: 4px 4px 0 #000;
+    transform: rotate(-2deg);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .row:nth-of-type(1) .btn:nth-child(2n) { background: #6ee7ff; transform: rotate(2deg); }
+  .row:nth-of-type(1) .btn:nth-child(3n) { background: #ffe14d; transform: rotate(-3deg); }
+  #handRow .btn:nth-child(2n) { background: #9dff7a; transform: rotate(2.5deg); }
+  #handRow .btn:nth-child(3n) { background: #ffb3f0; transform: rotate(-2deg); }
+  #faceRow .btn:nth-child(2n) { background: #ffd76e; transform: rotate(2deg); }
+  #bendRow .btn:nth-child(2n) { background: #bda7ff; transform: rotate(-2.5deg); }
+  .btn:hover { animation: wobble 0.4s ease infinite; box-shadow: 6px 6px 0 #000; }
+  .btn:active { transform: scale(0.92) rotate(0deg) !important; box-shadow: 1px 1px 0 #000; }
+  .btn.active { background: #fff35c; border-color: #000; color: #000; font-weight: 800; box-shadow: 5px 5px 0 #000, 0 0 0 4px #ff5fa2; }
+  .btn.small { padding: 14px 22px; font-size: 15px; }
+
+  #statusText {
+    transform: rotate(-1.5deg); transition: opacity 0.6s;
+    background: #fff35c; padding: 7px 18px; border-radius: 999px; border: 3px solid #000;
+    box-shadow: 3px 3px 0 #000;
+    font-size: 12px; font-weight: 700; color: #000;
+    animation: pop 0.4s ease;
+  }
+
+  #credit {
+    position: fixed; bottom: 10px; right: 14px; font-size: 12px; font-weight: 700;
+    color: #ff5fa2; text-shadow: 1px 1px 0 #000; z-index: 20;
+  }
+
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 30; }
+  #flash.show { animation: flashAnim 0.3s ease-out; }
+  @keyframes flashAnim { 0% { opacity: 0.85; } 100% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<canvas id="outputCanvas"></canvas>
+<video id="inputVideo" autoplay playsinline muted></video>
+<div id="flash"></div>
+
+<div id="topBar">
+  <div class="row">
+    <button class="btn" data-category="hand">Hand</button>
+    <button class="btn" data-category="face">Face</button>
+    <button class="btn small" id="snapBtn">Snap Photo</button>
+    <button class="btn small" id="resetBtn">Reset</button>
+  </div>
+  <div class="row" id="handRow">
+    <button class="btn" data-hand-mode="bend">Bend</button>
+    <button class="btn" data-hand-mode="grid">Grid</button>
+    <button class="btn" data-hand-mode="gravity">Gravity</button>
+    <button class="btn" data-hand-mode="push">Push</button>
+    <button class="btn" data-hand-mode="twist">Twist</button>
+  </div>
+  <div class="row" id="bendRow">
+    <button class="btn small" id="stickyBtn">Release: snap back</button>
+    <button class="btn small" id="linesBtn">Grid lines: on</button>
+  </div>
+  <div class="row" id="faceRow" style="display:none;">
+    <button class="btn" data-face-mode="bulge">Bulge</button>
+    <button class="btn" data-face-mode="squeeze">Squeeze</button>
+    <button class="btn" data-face-mode="twirl">Twirl</button>
+  </div>
+  <div id="statusText">Starting camera...</div>
+</div>
+
+<div id="credit">reality bender by avery beuth</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+<script>
+(function () {
+  "use strict";
+
+  const video = document.getElementById("inputVideo");
+  const canvas = document.getElementById("outputCanvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const statusText = document.getElementById("statusText");
+  const flashEl = document.getElementById("flash");
+
+  const ACCENT = "#8fd0ff";
+  const ACCENT_DIM = "rgba(143,208,255,0.55)";
+
+  let category = "hand";     // "hand" or "face"
+  let handMode = "bend";     // "bend" | "grid" | "gravity" | "push" | "twist"
+  let faceMode = "bulge";    // "bulge" | "squeeze" | "twirl"
+
+  let latestHands = null;
+  let latestFace = null;
+  let videoReady = false;
+
+  // ---------- Hand tracking stabilizer ----------
+  // Raw MediaPipe landmarks jitter frame to frame and can swap hand order, which made every
+  // pinch/grab mode twitchy. This keeps each physical hand pinned to the same slot (matched by
+  // wrist position), low-pass filters its landmarks, and rides out brief missed-detection frames
+  // instead of snapping a grab to null the moment tracking blinks.
+  const HAND_SMOOTH = 0.45;   // 0..1, higher follows the raw signal faster but jitters more
+  const HAND_MISS_GRACE = 5;  // frames to keep a hand "alive" through a brief dropout
+  let handTracks = [null, null];
+
+  function resetHandTracking() { handTracks = [null, null]; }
+
+  function stabilizeHands(raw) {
+    const rawArr = raw || [];
+    const used = new Array(rawArr.length).fill(false);
+    const assign = [null, null];
+    for (let t = 0; t < 2; t++) {
+      const tr = handTracks[t];
+      if (!tr) continue;
+      let best = -1, bestD = 0.35; // normalized video-space distance; beyond this it's a different hand
+      for (let i = 0; i < rawArr.length; i++) {
+        if (used[i]) continue;
+        const d = Math.hypot(rawArr[i][0].x - tr.lm[0].x, rawArr[i][0].y - tr.lm[0].y);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      if (best >= 0) { assign[t] = best; used[best] = true; }
+    }
+    for (let i = 0; i < rawArr.length; i++) {
+      if (used[i]) continue;
+      const slot = assign.indexOf(null);
+      if (slot === -1) break;
+      assign[slot] = i; used[i] = true;
+    }
+
+    const out = [];
+    for (let t = 0; t < 2; t++) {
+      const idx = assign[t];
+      if (idx === null) {
+        if (handTracks[t]) {
+          handTracks[t].miss++;
+          if (handTracks[t].miss > HAND_MISS_GRACE) handTracks[t] = null;
+          else out[t] = handTracks[t].lm; // coast on the last known pose through the dropout
+        }
+        continue;
+      }
+      const src = rawArr[idx];
+      if (!handTracks[t]) {
+        handTracks[t] = { lm: src.map((p) => ({ x: p.x, y: p.y, z: p.z })), miss: 0 };
+      } else {
+        const tr = handTracks[t];
+        for (let k = 0; k < src.length; k++) {
+          tr.lm[k].x += (src[k].x - tr.lm[k].x) * HAND_SMOOTH;
+          tr.lm[k].y += (src[k].y - tr.lm[k].y) * HAND_SMOOTH;
+          tr.lm[k].z += (src[k].z - tr.lm[k].z) * HAND_SMOOTH;
+        }
+        tr.miss = 0;
+      }
+      out[t] = handTracks[t].lm;
+    }
+    return out.filter(Boolean);
+  }
+
+  function setStatus(msg) { statusText.textContent = msg; }
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    rebuildGrid();
+    resizeBend();
+  }
+  window.addEventListener("resize", resizeCanvas);
+
+  // ---------- Cover-fit mapping (video to canvas, mirrored) ----------
+  let cover = { scale: 1, dx: 0, dy: 0, dWidth: 0, dHeight: 0 };
+
+  function computeCover() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+    cover.scale = scale;
+    cover.dWidth = video.videoWidth * scale;
+    cover.dHeight = video.videoHeight * scale;
+    cover.dx = (canvas.width - cover.dWidth) / 2;
+    cover.dy = (canvas.height - cover.dHeight) / 2;
+  }
+
+  function landmarkToCanvas(lm) {
+    const rawX = lm.x * video.videoWidth * cover.scale + cover.dx;
+    const y = lm.y * video.videoHeight * cover.scale + cover.dy;
+    return { x: canvas.width - rawX, y: y };
+  }
+
+  function drawMirroredVideo(alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, cover.dx, cover.dy, cover.dWidth, cover.dHeight);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawHint(text) {
+    ctx.save();
+    ctx.font = "13px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.textAlign = "center";
+    ctx.fillText(text, canvas.width / 2, canvas.height - 26);
+    ctx.restore();
+  }
+
+  // ---------- Shared pixel warp helper ----------
+  // warpFn receives (dist, angle, percent) and returns {dist, angle} for the source sample
+  function clampBBox(cx, cy, radius) {
+    let bx = Math.floor(cx - radius);
+    let by = Math.floor(cy - radius);
+    let bw = Math.ceil(radius * 2);
+    let bh = Math.ceil(radius * 2);
+    if (bx < 0) { bw += bx; bx = 0; }
+    if (by < 0) { bh += by; by = 0; }
+    if (bx + bw > canvas.width) bw = canvas.width - bx;
+    if (by + bh > canvas.height) bh = canvas.height - by;
+    bw = Math.max(1, bw);
+    bh = Math.max(1, bh);
+    return { bx, by, bw, bh };
+  }
+
+  function applyPixelWarp(cx, cy, radius, warpFn) {
+    if (radius < 4) return;
+    const box = clampBBox(cx, cy, radius);
+    const src = ctx.getImageData(box.bx, box.by, box.bw, box.bh);
+    const out = ctx.createImageData(box.bw, box.bh);
+    const sData = src.data;
+    const oData = out.data;
+
+    for (let py = 0; py < box.bh; py++) {
+      const oy = box.by + py;
+      for (let px = 0; px < box.bw; px++) {
+        const ox = box.bx + px;
+        const dx = ox - cx;
+        const dy = oy - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        let sx = ox, sy = oy;
+
+        if (dist < radius && dist > 0.0001) {
+          const angle = Math.atan2(dy, dx);
+          const percent = dist / radius;
+          const result = warpFn(dist, angle, percent);
+          sx = cx + Math.cos(result.angle) * result.dist;
+          sy = cy + Math.sin(result.angle) * result.dist;
+        }
+
+        const lsx = Math.round(sx - box.bx);
+        const lsy = Math.round(sy - box.by);
+        const outIdx = (py * box.bw + px) * 4;
+
+        if (lsx >= 0 && lsx < box.bw && lsy >= 0 && lsy < box.bh) {
+          const srcIdx = (lsy * box.bw + lsx) * 4;
+          oData[outIdx] = sData[srcIdx];
+          oData[outIdx + 1] = sData[srcIdx + 1];
+          oData[outIdx + 2] = sData[srcIdx + 2];
+          oData[outIdx + 3] = 255;
+        } else {
+          const localIdx = (py * box.bw + px) * 4;
+          oData[outIdx] = sData[localIdx];
+          oData[outIdx + 1] = sData[localIdx + 1];
+          oData[outIdx + 2] = sData[localIdx + 2];
+          oData[outIdx + 3] = 255;
+        }
+      }
+    }
+    ctx.putImageData(out, box.bx, box.by);
+  }
+
+  function radialWarp(power) {
+    return (dist, angle, percent) => ({ dist: dist * Math.pow(percent, power), angle: angle });
+  }
+
+  function twistWarp(rotationAmount) {
+    return (dist, angle, percent) => {
+      const falloff = 1 - percent;
+      return { dist: dist, angle: angle + rotationAmount * falloff * falloff };
+    };
+  }
+
+  // ---------- Hand Stretch grid ----------
+  let grid = { cols: 18, rows: 11, nodes: [] };
+  const GRAB_RADIUS = 70;
+  const PINCH_ON_RATIO = 0.045;
+  const PINCH_OFF_RATIO = 0.06;
+  const SPRING_K = 0.14;
+  const DAMPING = 0.78;
+
+  function rebuildGrid() {
+    const nodes = [];
+    const marginX = canvas.width * 0.04;
+    const marginY = canvas.height * 0.04;
+    const usableW = canvas.width - marginX * 2;
+    const usableH = canvas.height - marginY * 2;
+    for (let r = 0; r < grid.rows; r++) {
+      for (let c = 0; c < grid.cols; c++) {
+        const hx = marginX + (usableW * c) / (grid.cols - 1);
+        const hy = marginY + (usableH * r) / (grid.rows - 1);
+        nodes.push({ homeX: hx, homeY: hy, x: hx, y: hy, vx: 0, vy: 0, held: false });
+      }
+    }
+    grid.nodes = nodes;
+  }
+  function nodeIndex(r, c) { return r * grid.cols + c; }
+
+  const gridSlots = [{ holding: null, pinching: false }, { holding: null, pinching: false }];
+
+  function pinchInfo(lm, handIndex) {
+    const thumb = landmarkToCanvas(lm[4]);
+    const index = landmarkToCanvas(lm[8]);
+    const dx = thumb.x - index.x, dy = thumb.y - index.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const point = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
+    return { dist, point };
+  }
+
+  function updateGridMode() {
+    const hands = latestHands || [];
+    for (let h = 0; h < 2; h++) {
+      const slot = gridSlots[h];
+      const lm = hands[h];
+      if (!lm) {
+        if (slot.holding) slot.holding.held = false;
+        slot.holding = null; slot.pinching = false; slot._cursor = null;
+        continue;
+      }
+      const info = pinchInfo(lm, h);
+      const onThresh = canvas.width * PINCH_ON_RATIO;
+      const offThresh = canvas.width * PINCH_OFF_RATIO;
+
+      if (!slot.pinching && info.dist < onThresh) {
+        slot.pinching = true;
+        let best = null, bestD = GRAB_RADIUS;
+        for (const node of grid.nodes) {
+          if (node.held) continue;
+          const d = Math.hypot(node.x - info.point.x, node.y - info.point.y);
+          if (d < bestD) { bestD = d; best = node; }
+        }
+        if (best) { best.held = true; slot.holding = best; }
+      } else if (slot.pinching && info.dist > offThresh) {
+        slot.pinching = false;
+        if (slot.holding) slot.holding.held = false;
+        slot.holding = null;
+      }
+
+      if (slot.pinching && slot.holding) {
+        slot.holding.x = info.point.x; slot.holding.y = info.point.y;
+        slot.holding.vx = 0; slot.holding.vy = 0;
+      }
+      slot._cursor = info.point;
+      slot._pinchActive = slot.pinching;
+    }
+
+    for (const node of grid.nodes) {
+      if (node.held) continue;
+      const fx = (node.homeX - node.x) * SPRING_K;
+      const fy = (node.homeY - node.y) * SPRING_K;
+      node.vx = (node.vx + fx) * DAMPING;
+      node.vy = (node.vy + fy) * DAMPING;
+      node.x += node.vx; node.y += node.vy;
+    }
+  }
+
+  function drawGridMode() {
+    drawMirroredVideo(0.3);
+    updateGridMode();
+
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.beginPath();
+    for (let r = 0; r < grid.rows; r++) {
+      for (let c = 0; c < grid.cols - 1; c++) {
+        const a = grid.nodes[nodeIndex(r, c)], b = grid.nodes[nodeIndex(r, c + 1)];
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      }
+    }
+    for (let c = 0; c < grid.cols; c++) {
+      for (let r = 0; r < grid.rows - 1; r++) {
+        const a = grid.nodes[nodeIndex(r, c)], b = grid.nodes[nodeIndex(r + 1, c)];
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      }
+    }
+    ctx.stroke();
+
+    for (const node of grid.nodes) {
+      ctx.beginPath();
+      ctx.fillStyle = node.held ? ACCENT : "rgba(255,255,255,0.4)";
+      ctx.arc(node.x, node.y, node.held ? 5 : 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (const slot of gridSlots) {
+      if (!slot._cursor) continue;
+      ctx.beginPath();
+      ctx.strokeStyle = slot._pinchActive ? ACCENT : "rgba(255,255,255,0.5)";
+      ctx.lineWidth = 2;
+      ctx.arc(slot._cursor.x, slot._cursor.y, slot._pinchActive ? 16 : 22, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!latestHands || latestHands.length === 0) {
+      drawHint("Show one or two hands. Pinch to grab and stretch the grid.");
+    }
+  }
+
+  // ---------- Gravity mode (pinch pulls the live video toward a point) ----------
+  const gravitySlots = [{ pinching: false, holdMs: 0, cursor: null }, { pinching: false, holdMs: 0, cursor: null }];
+  let lastFrameTime = performance.now();
+
+  function drawGravityMode() {
+    drawMirroredVideo(1);
+    const now = performance.now();
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+
+    const hands = latestHands || [];
+    let any = false;
+    for (let h = 0; h < 2; h++) {
+      const slot = gravitySlots[h];
+      const lm = hands[h];
+      if (!lm) { slot.pinching = false; slot.holdMs = 0; slot.cursor = null; continue; }
+      const info = pinchInfo(lm, h);
+      const onThresh = canvas.width * PINCH_ON_RATIO;
+      const offThresh = canvas.width * PINCH_OFF_RATIO;
+      if (info.dist < onThresh) {
+        slot.pinching = true;
+        slot.holdMs = Math.min(slot.holdMs + dt, 1600);
+      } else if (info.dist > offThresh) {
+        slot.pinching = false;
+        slot.holdMs = 0;
+      }
+      slot.cursor = info.point;
+      if (slot.pinching) {
+        any = true;
+        const strength = slot.holdMs / 1600; // 0 to 1
+        const radius = 110 + strength * 130;
+        const power = 1.4 + strength * 2.4; // stronger pull the longer it is held
+        applyPixelWarp(info.point.x, info.point.y, radius, radialWarp(power));
+      }
+    }
+
+    for (const slot of gravitySlots) {
+      if (!slot.cursor) continue;
+      ctx.beginPath();
+      ctx.strokeStyle = slot.pinching ? ACCENT : "rgba(255,255,255,0.5)";
+      ctx.lineWidth = 2;
+      ctx.arc(slot.cursor.x, slot.cursor.y, slot.pinching ? 14 : 20, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!any && (!hands || hands.length === 0)) {
+      drawHint("Pinch and hold to bend the video toward a point. Hold longer for a stronger pull.");
+    }
+  }
+
+  // ---------- Push mode (open hand pushes the video outward like a bubble) ----------
+  function palmCenter(lm) {
+    const ids = [0, 5, 9, 13, 17];
+    let sx = 0, sy = 0;
+    for (const id of ids) {
+      const p = landmarkToCanvas(lm[id]);
+      sx += p.x; sy += p.y;
+    }
+    return { x: sx / ids.length, y: sy / ids.length };
+  }
+
+  function drawPushMode() {
+    drawMirroredVideo(1);
+    const hands = latestHands || [];
+    for (let h = 0; h < 2; h++) {
+      const lm = hands[h];
+      if (!lm) continue;
+      const center = palmCenter(lm);
+      applyPixelWarp(center.x, center.y, 150, radialWarp(0.45));
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(255,255,255,0.6)";
+      ctx.lineWidth = 2;
+      ctx.arc(center.x, center.y, 150, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!hands || hands.length === 0) {
+      drawHint("Show an open hand to push the video outward from your palm.");
+    }
+  }
+
+  // ---------- Twist mode (pinch and hold spins the video, releases unwinds it) ----------
+  const twistSlots = [{ angle: 0, pinching: false, cursor: null }, { angle: 0, pinching: false, cursor: null }];
+
+  function drawTwistMode() {
+    drawMirroredVideo(1);
+    const hands = latestHands || [];
+    let any = false;
+    for (let h = 0; h < 2; h++) {
+      const slot = twistSlots[h];
+      const lm = hands[h];
+      if (!lm) {
+        slot.angle *= 0.9;
+        continue;
+      }
+      const info = pinchInfo(lm, h);
+      const onThresh = canvas.width * PINCH_ON_RATIO;
+      const offThresh = canvas.width * PINCH_OFF_RATIO;
+      if (info.dist < onThresh) { slot.pinching = true; }
+      else if (info.dist > offThresh) { slot.pinching = false; }
+      slot.cursor = info.point;
+
+      if (slot.pinching) {
+        slot.angle += 0.07;
+        slot.angle = Math.min(slot.angle, Math.PI * 3);
+      } else {
+        slot.angle *= 0.92;
+      }
+
+      if (Math.abs(slot.angle) > 0.01) {
+        any = true;
+        applyPixelWarp(info.point.x, info.point.y, 170, twistWarp(slot.angle));
+      }
+    }
+    for (const slot of twistSlots) {
+      if (!slot.cursor) continue;
+      ctx.beginPath();
+      ctx.strokeStyle = slot.pinching ? ACCENT : "rgba(255,255,255,0.5)";
+      ctx.lineWidth = 2;
+      ctx.arc(slot.cursor.x, slot.cursor.y, slot.pinching ? 14 : 20, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!any && (!hands || hands.length === 0)) {
+      drawHint("Pinch and hold to spin the video around that point. Let go to unwind it.");
+    }
+  }
+
+  // ---------- Bend mode: real mass-spring cloth sim of space itself (WebGL) ----------
+  // The video is mapped onto a grid of point masses connected by springs (structural +
+  // shear, so it resists shearing instead of just radial blobs). Pinch a point to pin that
+  // node to your fingertip; the springs pull the rest of the sheet after it, so stretch
+  // actually propagates through the mesh instead of being a canned falloff shape. Pinch
+  // with both hands to grab two points and stretch/twist the sheet between them for real.
+  const glCanvas = document.createElement("canvas");
+  const gl = glCanvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias: false });
+  const BCOLS = 56, BROWS = 32, BN = (BCOLS + 1) * (BROWS + 1);
+  const NBR_DIRS = [[1, 0], [0, 1], [1, 1], [-1, 1]]; // right, down, and both diagonals (shear resistance)
+  const bend = {
+    home: new Float32Array(BN * 2), pos: new Float32Array(BN * 2), vel: new Float32Array(BN * 2),
+    force: new Float32Array(BN * 2),
+    nbr: NBR_DIRS.map(() => new Int32Array(BN).fill(-1)),
+    rest: NBR_DIRS.map(() => new Float32Array(BN)),
+    pin: [-1, -1], sticky: false, lines: true,
+    slots: [{ pinch: false, pt: null, seen: false, size: 150 }, { pinch: false, pt: null, seen: false, size: 150 }]
+  };
+  let glProg = null, glHomeBuf, glPosBuf, glIdxBuf, glTex, glIdxCount = 0;
+  const glU = {}, glA = {};
+
+  function initGL() {
+    if (!gl) return false;
+    const vsSrc = "attribute vec2 aHome;attribute vec2 aPos;uniform vec2 uSize;uniform vec4 uCover;varying vec2 vUV;" +
+      "void main(){vec2 r=vec2(uSize.x-aHome.x,aHome.y);vUV=(r-uCover.xy)/uCover.zw;" +
+      "vec2 c=aPos/uSize*2.0-1.0;gl_Position=vec4(c.x,-c.y,0.0,1.0);}";
+    const fsSrc = "precision mediump float;uniform sampler2D uTex;varying vec2 vUV;void main(){gl_FragColor=texture2D(uTex,vUV);}";
+    const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null; };
+    const vs = mk(gl.VERTEX_SHADER, vsSrc), fs = mk(gl.FRAGMENT_SHADER, fsSrc);
+    if (!vs || !fs) return false;
+    glProg = gl.createProgram();
+    gl.attachShader(glProg, vs); gl.attachShader(glProg, fs); gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) return false;
+    glU.size = gl.getUniformLocation(glProg, "uSize");
+    glU.cover = gl.getUniformLocation(glProg, "uCover");
+    glU.tex = gl.getUniformLocation(glProg, "uTex");
+    glA.home = gl.getAttribLocation(glProg, "aHome");
+    glA.pos = gl.getAttribLocation(glProg, "aPos");
+    glHomeBuf = gl.createBuffer(); glPosBuf = gl.createBuffer(); glIdxBuf = gl.createBuffer();
+    const idx = new Uint16Array(BCOLS * BROWS * 6);
+    let k = 0;
+    for (let r = 0; r < BROWS; r++) for (let c = 0; c < BCOLS; c++) {
+      const a = r * (BCOLS + 1) + c, b = a + 1, cc = a + BCOLS + 1, dd = cc + 1;
+      idx.set([a, b, cc, b, dd, cc], k); k += 6;
+    }
+    glIdxCount = k;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glIdxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+    glTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    return true;
+  }
+  const glOK = initGL();
+
+  function resizeBend() {
+    glCanvas.width = canvas.width; glCanvas.height = canvas.height;
+    for (let r = 0; r <= BROWS; r++) for (let c = 0; c <= BCOLS; c++) {
+      const i = (r * (BCOLS + 1) + c) * 2;
+      bend.home[i] = canvas.width * c / BCOLS;
+      bend.home[i + 1] = canvas.height * r / BROWS;
+    }
+    // Precompute each node's spring rest-length to its right / down / both diagonal
+    // neighbours once, from the flat home layout, so updateBend() never divides by zero.
+    for (let r = 0; r <= BROWS; r++) for (let c = 0; c <= BCOLS; c++) {
+      const i = r * (BCOLS + 1) + c;
+      NBR_DIRS.forEach((dir, d) => {
+        const nc = c + dir[0], nr = r + dir[1];
+        if (nc < 0 || nc > BCOLS || nr < 0 || nr > BROWS) return;
+        const j = nr * (BCOLS + 1) + nc;
+        bend.nbr[d][i] = j;
+        bend.rest[d][i] = Math.hypot(bend.home[j * 2] - bend.home[i * 2], bend.home[j * 2 + 1] - bend.home[i * 2 + 1]);
+      });
+    }
+    resetBend();
+    if (glOK) { gl.bindBuffer(gl.ARRAY_BUFFER, glHomeBuf); gl.bufferData(gl.ARRAY_BUFFER, bend.home, gl.STATIC_DRAW); }
+  }
+
+  function resetBend() {
+    bend.pos.set(bend.home); bend.vel.fill(0); bend.pin[0] = -1; bend.pin[1] = -1;
+    for (const sl of bend.slots) sl.pinch = false;
+  }
+
+  function pinchRatio(lm) {
+    const t = landmarkToCanvas(lm[4]), i = landmarkToCanvas(lm[8]);
+    const w = landmarkToCanvas(lm[0]), m = landmarkToCanvas(lm[9]);
+    const size = Math.max(20, Math.hypot(w.x - m.x, w.y - m.y));
+    return { ratio: Math.hypot(t.x - i.x, t.y - i.y) / size, size, point: { x: (t.x + i.x) / 2, y: (t.y + i.y) / 2 } };
+  }
+
+  // Keeps hand 1 / hand 2 consistent between frames, even if MediaPipe swaps their order.
+  function bendTrack(hands) {
+    const S = bend.slots;
+    const infos = hands.slice(0, 2).map(pinchRatio);
+    const dist = (sl, p) => sl.pt ? Math.hypot(sl.pt.x - p.x, sl.pt.y - p.y) : 1e9;
+    let assign = infos.map((_, i) => i);
+    if (infos.length === 1) assign = [dist(S[1], infos[0].point) < dist(S[0], infos[0].point) ? 1 : 0];
+    else if (infos.length === 2 && S[0].pt && S[1].pt) {
+      const straight = dist(S[0], infos[0].point) + dist(S[1], infos[1].point);
+      const swapped = dist(S[0], infos[1].point) + dist(S[1], infos[0].point);
+      if (swapped < straight) assign = [1, 0];
+    }
+    S[0].seen = S[1].seen = false;
+    infos.forEach((info, i) => {
+      const sl = S[assign[i]];
+      sl.pt = (sl.pt && dist(sl, info.point) < 250)
+        ? { x: sl.pt.x + (info.point.x - sl.pt.x) * 0.65, y: sl.pt.y + (info.point.y - sl.pt.y) * 0.65 }
+        : { x: info.point.x, y: info.point.y };
+      sl.seen = true; sl.size = info.size;
+      if (info.ratio < 0.30) sl.pinch = true; else if (info.ratio > 0.45) sl.pinch = false;
+    });
+    for (const sl of S) if (!sl.seen) sl.pinch = false;
+  }
+
+  const STRUCT_K = 0.2;   // spring stiffness along the mesh
+  const DAMP = 0.87;      // velocity damping each step (keeps the sim stable and lets jiggle settle)
+
+  function updateBend() {
+    const { pos, vel, force, home, nbr, rest, pin } = bend;
+    bendTrack(latestHands || []);
+    const S = bend.slots;
+
+    // Pin the nearest mesh node to each active pinch, and hold it at the fingertip.
+    for (let s = 0; s < 2; s++) {
+      const sl = S[s];
+      if (sl.seen && sl.pinch) {
+        if (pin[s] === -1) {
+          let best = -1, bestD = Infinity;
+          for (let i = 0; i < BN; i++) {
+            const dx = pos[i * 2] - sl.pt.x, dy = pos[i * 2 + 1] - sl.pt.y, dd = dx * dx + dy * dy;
+            if (dd < bestD) { bestD = dd; best = i; }
+          }
+          pin[s] = best;
+        }
+        pos[pin[s] * 2] = sl.pt.x; pos[pin[s] * 2 + 1] = sl.pt.y;
+        vel[pin[s] * 2] = 0; vel[pin[s] * 2 + 1] = 0;
+      } else {
+        pin[s] = -1;
+      }
+    }
+
+    // Hookean springs along the mesh: each edge pulls its two ends toward its rest length,
+    // so a tug on one pinned node drags its neighbours, and their neighbours, outward.
+    force.fill(0);
+    for (let d = 0; d < NBR_DIRS.length; d++) {
+      const nbrArr = nbr[d], restArr = rest[d];
+      for (let i = 0; i < BN; i++) {
+        const j = nbrArr[i];
+        if (j < 0) continue;
+        const dx = pos[j * 2] - pos[i * 2], dy = pos[j * 2 + 1] - pos[i * 2 + 1];
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        const diff = ((dist - restArr[i]) / dist) * STRUCT_K;
+        const fx = dx * diff, fy = dy * diff;
+        force[i * 2] += fx; force[i * 2 + 1] += fy;
+        force[j * 2] -= fx; force[j * 2 + 1] -= fy;
+      }
+    }
+
+    // Soft pull back toward the flat sheet (shape memory). Near-zero in "stay bent" so the
+    // mesh keeps whatever shape the springs settle into instead of snapping home.
+    const homeK = bend.sticky ? 0.0006 : 0.02;
+    for (let i = 0; i < BN; i++) {
+      if (i === pin[0] || i === pin[1]) continue; // pinned nodes are kinematic, driven by the hand
+      const ix = i * 2, iy = i * 2 + 1;
+      vel[ix] = (vel[ix] + force[ix] - homeK * (pos[ix] - home[ix])) * DAMP;
+      vel[iy] = (vel[iy] + force[iy] - homeK * (pos[iy] - home[iy])) * DAMP;
+      pos[ix] += vel[ix]; pos[iy] += vel[iy];
+    }
+  }
+
+  function drawBendMode() {
+    if (!glOK) { setStatus("WebGL isn't available here, so Bend can't run. Try Grid."); drawGridMode(); return; }
+    updateBend();
+    drawMirroredVideo(0.35);   // faint "real" world underneath, visible where space is torn open
+
+    gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    if (video.readyState >= 2) {
+      gl.useProgram(glProg);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, glTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+      gl.uniform1i(glU.tex, 0);
+      gl.uniform2f(glU.size, glCanvas.width, glCanvas.height);
+      gl.uniform4f(glU.cover, cover.dx, cover.dy, cover.dWidth, cover.dHeight);
+      gl.bindBuffer(gl.ARRAY_BUFFER, glHomeBuf);
+      gl.enableVertexAttribArray(glA.home); gl.vertexAttribPointer(glA.home, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, glPosBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, bend.pos, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(glA.pos); gl.vertexAttribPointer(glA.pos, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glIdxBuf);
+      gl.drawElements(gl.TRIANGLES, glIdxCount, gl.UNSIGNED_SHORT, 0);
+      ctx.drawImage(glCanvas, 0, 0);
+    }
+
+    const pos = bend.pos;
+    if (bend.lines) {   // the "fabric of space" follows the warp
+      ctx.strokeStyle = "rgba(255,255,255,0.22)"; ctx.lineWidth = 1; ctx.beginPath();
+      for (let r = 0; r <= BROWS; r += 4) for (let c = 0; c <= BCOLS; c++) {
+        const i = (r * (BCOLS + 1) + c) * 2;
+        if (c === 0) ctx.moveTo(pos[i], pos[i + 1]); else ctx.lineTo(pos[i], pos[i + 1]);
+      }
+      for (let c = 0; c <= BCOLS; c += 4) for (let r = 0; r <= BROWS; r++) {
+        const i = (r * (BCOLS + 1) + c) * 2;
+        if (r === 0) ctx.moveTo(pos[i], pos[i + 1]); else ctx.lineTo(pos[i], pos[i + 1]);
+      }
+      ctx.stroke();
+    }
+
+    const S = bend.slots;
+    if (bend.pin[0] >= 0 && bend.pin[1] >= 0) {
+      ctx.strokeStyle = ACCENT_DIM; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(S[0].pt.x, S[0].pt.y); ctx.lineTo(S[1].pt.x, S[1].pt.y); ctx.stroke();
+    }
+    for (const sl of S) {
+      if (!sl.seen || !sl.pt) continue;
+      ctx.beginPath(); ctx.lineWidth = 2;
+      ctx.strokeStyle = sl.pinch ? ACCENT : "rgba(255,255,255,0.5)";
+      ctx.arc(sl.pt.x, sl.pt.y, sl.pinch ? 14 : 22, 0, Math.PI * 2); ctx.stroke();
+      if (sl.pinch) { ctx.beginPath(); ctx.fillStyle = ACCENT; ctx.arc(sl.pt.x, sl.pt.y, 4, 0, Math.PI * 2); ctx.fill(); }
+    }
+    if (!S[0].seen && !S[1].seen) drawHint("Pinch to grab reality and drag it. Pinch with BOTH hands and pull apart to stretch and twist space.");
+  }
+
+  function resetHandModes() {
+
+    resetBend();
+    rebuildGrid();
+    for (const s of gridSlots) { s.holding = null; s.pinching = false; }
+    for (const s of gravitySlots) { s.pinching = false; s.holdMs = 0; }
+    for (const s of twistSlots) { s.angle = 0; s.pinching = false; }
+  }
+
+  // ---------- Face filters ----------
+  const FACE_CENTER_IDX = 1, FACE_TOP_IDX = 10, FACE_BOTTOM_IDX = 152, FACE_LEFT_IDX = 234, FACE_RIGHT_IDX = 454;
+  let faceTwirlSpin = 0;
+
+  function getFaceGeometry(lm) {
+    const center = landmarkToCanvas(lm[FACE_CENTER_IDX]);
+    const left = landmarkToCanvas(lm[FACE_LEFT_IDX]);
+    const right = landmarkToCanvas(lm[FACE_RIGHT_IDX]);
+    const top = landmarkToCanvas(lm[FACE_TOP_IDX]);
+    const bottom = landmarkToCanvas(lm[FACE_BOTTOM_IDX]);
+    const widthPx = Math.hypot(right.x - left.x, right.y - left.y);
+    const heightPx = Math.hypot(bottom.x - top.x, bottom.y - top.y);
+    return { center, faceSize: Math.max(widthPx, heightPx) };
+  }
+
+  function drawFaceFilterMode(mode) {
+    drawMirroredVideo(1);
+    const faces = latestFace;
+    if (!faces || faces.length === 0) {
+      drawHint("Face not detected. Center your face in the frame.");
+      return;
+    }
+    const lm = faces[0];
+    const geo = getFaceGeometry(lm);
+    const radius = Math.max(40, geo.faceSize * 0.9);
+
+    if (mode === "twirl") {
+      faceTwirlSpin += 0.02;
+      const angle = Math.PI * 1.15 + Math.sin(faceTwirlSpin) * 0.4;
+      applyPixelWarp(geo.center.x, geo.center.y, radius, twistWarp(angle));
+    } else {
+      const power = mode === "bulge" ? 0.5 : 1.9;
+      applyPixelWarp(geo.center.x, geo.center.y, radius, radialWarp(power));
+    }
+  }
+
+  // ---------- Main render loop ----------
+  function renderLoop() {
+    requestAnimationFrame(renderLoop);
+    if (!videoReady || !video.videoWidth) return;
+    computeCover();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (category === "hand") {
+      if (handMode === "bend") drawBendMode();
+      else if (handMode === "grid") drawGridMode();
+      else if (handMode === "gravity") drawGravityMode();
+      else if (handMode === "push") drawPushMode();
+      else if (handMode === "twist") drawTwistMode();
+    } else {
+      drawFaceFilterMode(faceMode);
+    }
+  }
+
+  // ---------- MediaPipe setup ----------
+  const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+  hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+  hands.onResults((results) => { latestHands = stabilizeHands(results.multiHandLandmarks); });
+
+  const faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
+  faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: false, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+  faceMesh.onResults((results) => { latestFace = results.multiFaceLandmarks || null; });
+
+  let camera = null;
+
+  async function startCamera() {
+    setStatus("Requesting camera access...");
+    try {
+      camera = new Camera(video, {
+        onFrame: async () => {
+          if (category === "hand") await hands.send({ image: video });
+          else await faceMesh.send({ image: video });
+        },
+        width: 1280, height: 720
+      });
+      await camera.start();
+      videoReady = true;
+      setStatus("Tracking active");
+      setTimeout(() => { statusText.style.opacity = 0; }, 2500);
+    } catch (err) {
+      setStatus("Camera permission denied or unavailable. Allow camera access and reload the page.");
+    }
+  }
+
+  // ---------- UI wiring ----------
+  const categoryButtons = document.querySelectorAll(".btn[data-category]");
+  const handRow = document.getElementById("handRow");
+  const faceRow = document.getElementById("faceRow");
+  const bendRow = document.getElementById("bendRow");
+  const handButtons = document.querySelectorAll(".btn[data-hand-mode]");
+  const faceButtons = document.querySelectorAll(".btn[data-face-mode]");
+
+  function refreshButtons() {
+    categoryButtons.forEach((b) => b.classList.toggle("active", b.dataset.category === category));
+    handButtons.forEach((b) => b.classList.toggle("active", b.dataset.handMode === handMode));
+    faceButtons.forEach((b) => b.classList.toggle("active", b.dataset.faceMode === faceMode));
+    handRow.style.display = category === "hand" ? "flex" : "none";
+    faceRow.style.display = category === "face" ? "flex" : "none";
+    bendRow.style.display = category === "hand" && handMode === "bend" ? "flex" : "none";
+  }
+
+  categoryButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      category = btn.dataset.category;
+      latestHands = null; latestFace = null;
+      resetHandTracking();
+      refreshButtons();
+    });
+  });
+  handButtons.forEach((btn) => {
+    btn.addEventListener("click", () => { handMode = btn.dataset.handMode; refreshButtons(); });
+  });
+  faceButtons.forEach((btn) => {
+    btn.addEventListener("click", () => { faceMode = btn.dataset.faceMode; refreshButtons(); });
+  });
+  refreshButtons();
+
+  document.getElementById("stickyBtn").addEventListener("click", (e) => {
+    bend.sticky = !bend.sticky;
+    e.target.textContent = bend.sticky ? "Release: stay bent" : "Release: snap back";
+  });
+  document.getElementById("linesBtn").addEventListener("click", (e) => {
+    bend.lines = !bend.lines;
+    e.target.textContent = "Grid lines: " + (bend.lines ? "on" : "off");
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", () => {
+    resetHandModes();
+    resetHandTracking();
+    faceTwirlSpin = 0;
+  });
+
+  document.getElementById("snapBtn").addEventListener("click", () => {
+    flashEl.classList.remove("show");
+    void flashEl.offsetWidth;
+    flashEl.classList.add("show");
+    const dataUrl = canvas.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = "reality-bender-" + Date.now() + ".png";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  // ---------- Boot ----------
+  resizeCanvas();
+  renderLoop();
+  startCamera();
+})();
+</script>
+</body>
+</html>
